@@ -377,10 +377,14 @@ def main() -> None:
                 )
                 user_msg = (
                     f"{header}{trunc_note}\n\n"
-                    "Please analyse all survey responses below.\n"
-                    "Use analyze_sentiment, extract_key_phrases, and recognize_entities tools — batch up to 10 responses per call.\n"
-                    "Provide: overall sentiment distribution, top themes, any negative responses "
-                    "requiring urgent attention, and 3 actionable recommendations.\n\n"
+                    "Please analyse all survey responses below using the Azure AI Language tools.\n"
+                    "Use analyze_sentiment, extract_key_phrases, and recognize_entities tools — batch up to 10 responses per call.\n\n"
+                    "Provide analysis in this structure:\n"
+                    "1. Customer Sentiment Overview (executive summary)\n"
+                    "2. Where Sentiment Breaks Down (table with themes and sentiment percentages)\n"
+                    "3. Key Drivers of Negative Sentiment (table with top 5 issue clusters)\n"
+                    "4. Key Drivers of Positive Sentiment (table with top strengths)\n"
+                    "5. Insight-Driven Recommendations (numbered, with Why/Recommendation format)\n\n"
                     f"Responses:\n{numbered}"
                 )
 

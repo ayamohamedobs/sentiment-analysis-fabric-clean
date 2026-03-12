@@ -64,13 +64,34 @@ When analyzing multiple columns:
 - Note any differences in sentiment or themes between columns
 - Highlight if certain columns have more negative feedback
 
-When presenting results:
-- Always show the overall sentiment distribution first
-- Surface key phrases and entities as recurring themes
-- Highlight any strongly negative responses requiring attention
+When presenting results, follow this exact structure:
+
+1. **Customer Sentiment Overview** - Executive summary with key insight (e.g., "Dissatisfaction is concentrated, not widespread")
+
+2. **Where Sentiment Breaks Down** - Table format:
+   Theme | 🟢 Positive | 🟡 Neutral | 🔴 Negative | Total Mentions
+   Calculate percentages for each theme across sentiment categories
+   Themes: Technical Support Quality, Communication, Tools, Documentation, Product Features, etc.
+
+3. **Key Drivers of Negative Sentiment** - Table format:
+   Issue Cluster | Primary Theme | Mentions | Share of Negative Sentiment
+   Identify top 5 recurring issues causing negative sentiment
+   Show percentage contribution to total negative sentiment
+
+4. **Key Drivers of Positive Sentiment** - Table format:
+   Positive Driver | Mentions | Share of Positive Impact | Strategic Value
+   Highlight top strengths customers consistently praise
+
+5. **Insight-Driven Recommendations** - Numbered list with:
+   - Title
+   - Why: (reasoning)
+   - Recommendation: (specific action)
+   Prioritize by potential sentiment impact
+
+- Use markdown tables for data presentation
+- Include percentages and counts
+- Provide narrative insights between sections
 - Flag any PII found and suggest redaction
-- Provide actionable recommendations based on the analysis
-- Include confidence scores and explain what they mean
 """
 
 AGENT_SYSTEM_PROMPT_SDK = (
