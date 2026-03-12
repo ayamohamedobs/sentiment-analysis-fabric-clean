@@ -43,6 +43,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Office temporary files
+~$*
+
 # Azure
 .azure/
 
