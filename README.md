@@ -68,11 +68,23 @@ Provisioned by `infra/resources.bicep` — all resources use **managed identity*
 | **Foundry Project** | `accounts/projects` | `sentiment-analysis` project |
 | **GPT-4o** | `accounts/deployments` | Agent's LLM (50K TPM capacity) |
 | **Azure AI Language** | `accounts` (TextAnalytics) | NLP APIs for sentiment, NER, key phrases, PII |
+| **Log Analytics Workspace** | `Microsoft.OperationalInsights/workspaces` | Centralized logging and monitoring backend |
+| **Application Insights** | `Microsoft.Insights/components` | Agent telemetry, request tracking, and performance monitoring |
 
 ### Role Assignments
 
 - AI Services → Language Service: `Cognitive Services User`
 - Foundry Project → Language Service: `Cognitive Services User`
+
+### Monitoring & Telemetry
+
+The application integrates with **Azure Application Insights** to provide:
+- **Request Tracing**: Track agent message processing end-to-end
+- **Tool Execution Metrics**: Monitor Language SDK tool calls (sentiment analysis, key phrase extraction, etc.)
+- **File Analysis Tracking**: Monitor survey file uploads and processing
+- **Performance Insights**: Response times, error rates, and usage patterns
+
+Telemetry is automatically sent when `APPLICATIONINSIGHTS_CONNECTION_STRING` is configured.
 
 ## Azure AI Language Capabilities
 

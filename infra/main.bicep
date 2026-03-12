@@ -64,3 +64,4 @@ output AZURE_LANGUAGE_ENDPOINT string = resources.outputs.languageEndpoint
 output AZURE_FOUNDRY_PROJECT_ENDPOINT string = resources.outputs.foundryProjectEndpoint
 output AZURE_GPT_DEPLOYMENT_NAME string = resources.outputs.gptDeploymentName
 output AZURE_RESOURCE_GROUP string = rg.name
+output APPLICATIONINSIGHTS_CONNECTION_STRING string = resources.outputs.appInsightsConnectionString

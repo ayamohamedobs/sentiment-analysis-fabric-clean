@@ -32,6 +32,20 @@ from azure.ai.agents.models import ToolOutput
 # Ensure src/ is on path so language_tools is importable
 sys.path.insert(0, os.path.dirname(__file__))
 
+# ─── Application Insights Configuration ──────────────────────────────────────
+
+# Initialize Application Insights if connection string is available
+_appinsights_connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+if _appinsights_connection_string:
+    try:
+        from azure.monitor.opentelemetry import configure_azure_monitor
+        configure_azure_monitor(connection_string=_appinsights_connection_string)
+        print("✅ Application Insights monitoring enabled")
+    except ImportError:
+        print("⚠️  Application Insights packages not installed. Run: pip install -r requirements.txt")
+else:
+    print("ℹ️  Application Insights not configured (APPLICATIONINSIGHTS_CONNECTION_STRING not set)")
+
 
 # ─── Excel reader ──────────────────────────────────────────────────────
 

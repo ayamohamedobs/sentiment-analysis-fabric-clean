@@ -37,12 +37,47 @@ param fabricOneLakeEndpoint string = ''
 var uniqueSuffix = uniqueString(resourceGroup().id, baseName)
 var aiServicesName = '${baseName}-ais-${uniqueSuffix}'
 var languageName = '${baseName}-lang-${uniqueSuffix}'
+var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
+var appInsightsName = '${baseName}-appins-${uniqueSuffix}'
 var projectName = 'sentiment-analysis'
 
 // ─── Well-known role definition IDs ─────────────────────────────────────────
 
 var roles = {
   cognitiveServicesUser: 'a97b65f3-24c7-4388-baec-2e87135dc908'
+}
+
+// ─── Log Analytics Workspace (for Application Insights) ────────────────────
+
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: logAnalyticsName
+  location: location
+  tags: tags
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+    features: {
+      enableLogAccessUsingOnlyResourcePermissions: true
+    }
+  }
+}
+
+// ─── Application Insights (for agent monitoring & telemetry) ───────────────
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  tags: tags
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: logAnalytics.id
+    IngestionMode: 'LogAnalytics'
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
 }
 
 // ─── Azure AI Services account (hosts the Foundry project) ─────────────────
@@ -213,3 +248,9 @@ output resourceGroupName string = resourceGroup().name
 
 @description('GPT deployment name')
 output gptDeploymentName string = gptDeployment.name
+
+@description('Application Insights connection string')
+output appInsightsConnectionString string = appInsights.properties.ConnectionString
+
+@description('Application Insights instrumentation key')
+output appInsightsInstrumentationKey string = appInsights.properties.InstrumentationKey
