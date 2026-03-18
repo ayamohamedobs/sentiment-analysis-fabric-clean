@@ -1,6 +1,6 @@
 # Survey Sentiment Analysis Agent
 
-AI-powered survey analysis using **Azure AI Foundry Agent** with **Azure AI Language** integration. Upload Excel/CSV files through a Streamlit web interface and get comprehensive sentiment analysis, key themes, and actionable recommendations.
+AI-powered survey analysis using **Azure AI Foundry Agent** with **Azure AI Language** and **Microsoft Fabric** integration. Analyze survey data from local Excel/CSV files or directly from a Fabric semantic model — all through a Streamlit web interface that delivers comprehensive sentiment analysis, key themes, and actionable recommendations.
 
 > [!IMPORTANT]
 > **DISCLAIMER:** This is a proof-of-concept (POC) sample application provided for demonstration and educational purposes only. This code is provided "AS IS" without warranty of any kind. Microsoft makes no warranties, express or implied, with respect to this sample code and disclaims all implied warranties including, without limitation, any implied warranties of merchantability, fitness for a particular purpose, or non-infringement. The entire risk arising out of the use or performance of the sample code remains with you. In no event shall Microsoft, its authors, or anyone else involved in the creation, production, or delivery of the code be liable for any damages whatsoever (including, without limitation, damages for loss of business profits, business interruption, loss of business information, or other pecuniary loss) arising out of the use of or inability to use the sample code, even if Microsoft has been advised of the possibility of such damages.
@@ -10,6 +10,7 @@ AI-powered survey analysis using **Azure AI Foundry Agent** with **Azure AI Lang
 ## Features
 
 - 📊 **Multi-column analysis** — Select 1-2 columns from Excel/CSV files
+- 🔗 **Microsoft Fabric integration** — Query survey data directly from Fabric semantic models via the built-in Fabric Data Agent tool
 - 🤖 **AI-powered insights** — GPT-4o agent with Azure Language integration
 - 💬 **Interactive chat** — Ask questions and get detailed analysis
 - 📈 **Comprehensive metrics** — Sentiment distribution, themes, key phrases, entities
@@ -18,15 +19,40 @@ AI-powered survey analysis using **Azure AI Foundry Agent** with **Azure AI Lang
 
 ## Architecture
 
+The solution supports two data sources — local file upload and Microsoft Fabric semantic models:
+
 ```
-┌─────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
-│ User uploads │────►│  Streamlit UI    │────►│  Azure AI        │────►│  Foundry Agent   │
-│ Excel / CSV  │     │  - File parsing  │     │  Language SDK    │     │  (GPT-4o)        │
-│              │     │  - Column select │     │  - Sentiment     │     │  - Analysis      │
-│              │     │  - Preview       │     │  - Key Phrases   │     │  - Insights      │
-│              │     │                  │     │  - NER & PII     │     │  - Recommendations│
-└─────────────┘     └──────────────────┘     └──────────────────┘     └──────────────────┘
+                    ┌──────────────────────────────────────────────────────────────┐
+                    │                   Azure AI Foundry Agent (GPT-4o)            │
+                    │                   - Orchestrates the workflow               │
+                    │                   - Calls Language tools for NLP            │
+                    │                   - Calls Fabric tool for data retrieval    │
+                    │                   - Generates structured analysis           │
+                    └────────┬─────────────────────┬──────────────────────────────┘
+                             │                     │
+                    ┌────────▼────────┐    ┌───────▼────────────┐
+                    │  Azure AI       │    │  Microsoft Fabric  │
+                    │  Language SDK   │    │  Data Agent        │
+                    │  - Sentiment    │    │  (FabricTool)      │
+                    │  - Key Phrases  │    │  - Translates NL   │
+                    │  - NER & PII    │    │    queries to DAX  │
+                    │  - Language Det │    │  - Returns data    │
+                    └─────────────────┘    │    from semantic    │
+                                           │    model            │
+                                           └────────────────────┘
 ```
+
+### Data Flow
+
+| Step | Component | Action |
+|------|-----------|--------|
+| 1 | **User** | Uploads a file OR types a natural language query for Fabric |
+| 2 | **Streamlit UI** | Parses file / sends query to the Foundry Agent |
+| 3 | **Foundry Agent** | For Fabric queries: calls the `fabric_dataagent` tool to retrieve data |
+| 4 | **Fabric Data Agent** | Translates query to DAX, fetches rows from the semantic model |
+| 5 | **Foundry Agent** | Calls Language tools (sentiment, key phrases, entities) on the data |
+| 6 | **Language Service** | Returns NLP analysis results |
+| 7 | **Foundry Agent** | Compiles 5-section structured analysis report |
 
 ### Tool Architecture: Dual-Mode Design
 
@@ -50,16 +76,18 @@ Mode is controlled by `LANGUAGE_TOOL_MODE` environment variable (defaults to `sd
 ```
 sentiment-analysis/
 ├── infra/
-│   ├── main.bicep            # Infrastructure-as-Code
-│   ├── main.parameters.json  # Parameter values
-│   └── resources.bicep       # All Azure resources
+│   ├── main.bicep            # Infrastructure-as-Code (subscription scope)
+│   ├── resources.bicep       # All Azure resources (AI Services, Language, etc.)
+│   └── resources.bicepparam  # Parameter values
 ├── src/
-│   ├── app.py               # Streamlit web UI + file handling
-│   ├── create_agent.py      # Agent provisioning (SDK/MCP modes)
+│   ├── app.py               # Streamlit web UI + file handling + Fabric queries
+│   ├── create_agent.py      # Agent provisioning (Language + Fabric tools)
 │   ├── language_tools.py    # Language SDK function tool implementations
 │   └── test_sdk.py          # End-to-end test for SDK mode
 ├── .env.example             # Environment variable template
+├── agent_config.json        # Auto-generated agent config (ID, endpoint, mode)
 ├── azure.yaml               # Azure Developer CLI config
+├── deploy.ps1               # Automated deployment script
 └── README.md                # This file
 ```
 
@@ -75,6 +103,7 @@ Provisioned by `infra/resources.bicep` — all resources use **managed identity*
 | **Azure AI Language** | `accounts` (TextAnalytics) | NLP APIs for sentiment, NER, key phrases, PII |
 | **Log Analytics Workspace** | `Microsoft.OperationalInsights/workspaces` | Centralized logging and monitoring backend |
 | **Application Insights** | `Microsoft.Insights/components` | Agent telemetry, request tracking, and performance monitoring |
+| **Fabric Connection** | `accounts/projects/connections` | Connection to Microsoft Fabric Data Agent (optional) |
 
 ### Role Assignments
 
@@ -182,11 +211,11 @@ Open http://localhost:8501 in your browser.
 
 ## Usage
 
-### Analyzing Survey Files
+### Option 1: Analyzing Local Files
 
 1. **Upload File**
-   - Click "Browse files" in the sidebar
-   - Select an Excel (.xlsx, .xls) or CSV file
+   - Select **"Local File"** in the sidebar
+   - Click "Browse files" and select an Excel (.xlsx, .xls) or CSV file
    - File is parsed automatically
 
 2. **Select Columns**
@@ -212,9 +241,30 @@ When analyzing 2 columns, the agent will:
 - Highlight differences in sentiment or themes between columns
 - Note if certain columns have more negative feedback
 
+### Option 2: Querying Microsoft Fabric
+
+When a Fabric connection is configured, the sidebar shows a **"Fabric Semantic Model"** option:
+
+1. **Select Data Source**
+   - Choose **"Fabric Semantic Model"** in the sidebar
+
+2. **Enter Query**
+   - Type a natural language query in the text area
+   - Examples:
+     - "Get all survey responses"
+     - "Show responses where satisfaction rating is below 3"
+     - "Get the first 20 responses from the Comments column"
+     - "What tables and columns are available?"
+
+3. **Query & Analyze**
+   - Click "Query & Analyze"
+   - The Foundry Agent calls the Fabric Data Agent to retrieve data
+   - Then runs Language analysis tools on the results
+   - Presents the same structured 5-section report
+
 ### Chat Interface
 
-After file analysis, you can:
+After analysis (from either data source), you can:
 - Ask follow-up questions about the results
 - Request specific breakdowns (e.g., "show only negative responses")
 - Get clarifications on themes or recommendations
@@ -292,6 +342,35 @@ az login
 | `FOUNDRY_PROJECT_NAME` | No | Project name (default: `sentiment-analysis`) |
 | `GPT_DEPLOYMENT_NAME` | No | GPT deployment name (default: `gpt-4o`) |
 | `LANGUAGE_TOOL_MODE` | No | Tool mode: `sdk` or `mcp` (default: `sdk`) |
+| `FABRIC_CONNECTION_NAME` | No | Foundry project connection name for Microsoft Fabric Data Agent |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | Application Insights connection string for telemetry |
+
+### Microsoft Fabric Setup
+
+To enable the Fabric Semantic Model data source:
+
+1. **Deploy a Fabric Data Agent** in your Microsoft Fabric workspace
+   - Create a semantic model (e.g., `rsa-survey`) with your survey data
+   - Create and publish a Data Agent that connects to the semantic model
+
+2. **Create a Fabric connection in the Foundry portal**
+   - Go to [AI Foundry](https://ai.azure.com) → your project → **Management Center** → **Connected Resources**
+   - Click **+ New connection** → select **Microsoft Fabric**
+   - Enter your Fabric **Workspace ID** and **Artifact ID** (the Data Agent)
+   - Set authentication to **User identity** (On-Behalf-Of)
+   - Save and note the connection name
+
+3. **Set the connection name in `.env`**
+   ```
+   FABRIC_CONNECTION_NAME="your-connection-name"
+   ```
+
+4. **Recreate the agent** to pick up the Fabric tool
+   ```powershell
+   python src/create_agent.py
+   ```
+
+> **Note:** Your Fabric workspace and Foundry project must be in the same Entra ID tenant for identity passthrough to work.
 
 ### Agent Configuration
 

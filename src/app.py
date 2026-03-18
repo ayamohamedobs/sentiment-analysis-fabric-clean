@@ -11,7 +11,7 @@ import json
 import io
 import os
 
-# Load .env from project root so the app works regardless of how it's launched
+# .env values OVERRIDE existing env vars to avoid stale terminal sessions
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
@@ -19,7 +19,7 @@ if os.path.exists(_env_path):
             _line = _line.strip()
             if _line and not _line.startswith("#") and "=" in _line:
                 _k, _v = _line.split("=", 1)
-                os.environ.setdefault(_k.strip(), _v.strip())
+                os.environ[_k.strip()] = _v.strip().strip('"')
 
 import sys
 import time
@@ -308,12 +308,38 @@ def main() -> None:
         st.caption(f"Tools: `{config.get('tool_mode', 'sdk').upper()}`")
         st.divider()
 
-        st.subheader("Upload Survey File")
-        uploaded_file = st.file_uploader(
-            "Excel / CSV file",
-            type=["xlsx", "xls", "csv"],
-            help="Upload a survey file to analyse",
-        )
+        # Data source selector — Fabric is available when the agent has the Fabric tool
+        fabric_enabled = bool(os.environ.get("FABRIC_CONNECTION_NAME"))
+        if fabric_enabled:
+            data_source = st.radio(
+                "Data Source",
+                ["Local File", "Fabric Semantic Model"],
+                help="Choose between uploading a local file or querying Fabric data"
+            )
+        else:
+            data_source = "Local File"
+            
+        st.subheader("📁 " + data_source)
+
+        # Initialize variables
+        fabric_query = None
+        
+        # Local file upload mode
+        if data_source == "Local File":
+            uploaded_file = st.file_uploader(
+                "Excel / CSV file",
+                type=["xlsx", "xls", "csv"],
+                help="Upload a survey file to analyse",
+            )
+        else:
+            # Fabric query mode
+            uploaded_file = None
+            fabric_query = st.text_area(
+                "Natural Language Query",
+                placeholder="e.g., Get all survey responses from last quarter",
+                help="Describe what data you want to analyze from your Fabric semantic model",
+                height=100
+            )
 
         sel_cols = None
         file_bytes = None
@@ -396,6 +422,29 @@ def main() -> None:
                 st.session_state.messages.append({"role": "assistant", "content": reply})
             st.rerun()
 
+        # Fabric query mode — agent calls Fabric Data Agent tool directly
+        if data_source == "Fabric Semantic Model" and fabric_query and st.button("Query & Analyze", type="primary", use_container_width=True):
+            with st.spinner("Querying Fabric and analyzing..."):
+                user_msg = (
+                    f"Use the fabric_dataagent tool now to query the semantic model: {fabric_query}\n\n"
+                    "After retrieving the data, analyze it using the Language tools "
+                    "(analyze_sentiment, extract_key_phrases, recognize_entities — batch up to 10 per call).\n\n"
+                    "Present results in this structure:\n"
+                    "1. Customer Sentiment Overview (executive summary)\n"
+                    "2. Where Sentiment Breaks Down (table with themes and sentiment percentages)\n"
+                    "3. Key Drivers of Negative Sentiment (table with top 5 issue clusters)\n"
+                    "4. Key Drivers of Positive Sentiment (table with top strengths)\n"
+                    "5. Insight-Driven Recommendations (numbered, with Why/Recommendation format)"
+                )
+                
+                st.session_state.messages.append({"role": "user", "content": f"Query: {fabric_query}"})
+                reply = send_message(
+                    client, config["agent_id"], st.session_state.thread_id, user_msg,
+                    tool_mode=tool_mode,
+                )
+                st.session_state.messages.append({"role": "assistant", "content": reply})
+            st.rerun()
+
         st.divider()
         if st.button("🗑️ New Conversation", use_container_width=True):
             reset_thread(client)
@@ -418,12 +467,21 @@ def main() -> None:
     # Show placeholder when no messages yet
     if not st.session_state.messages:
         with st.chat_message("assistant"):
-            st.markdown(
-                "👋 Hi! I'm your Survey Analysis Agent. You can:\n\n"
-                "- **Upload an Excel file** in the sidebar for full analysis\n"
-                "- **Type a message** below — paste responses directly or ask questions\n\n"
-                "Try: *'Analyse: Great service! / Very slow delivery / Best experience ever'*"
-            )
+            if fabric_enabled:
+                st.markdown(
+                    "👋 Hi! I'm your Survey Analysis Agent. You can:\n\n"
+                    "- **Upload an Excel file** in the sidebar for analysis\n"
+                    "- **Query Fabric data** using natural language\n"
+                    "- **Type a message** below — paste responses directly or ask questions\n\n"
+                    "Try: *'Analyse: Great service! / Very slow delivery / Best experience ever'*"
+                )
+            else:
+                st.markdown(
+                    "👋 Hi! I'm your Survey Analysis Agent. You can:\n\n"
+                    "- **Upload an Excel file** in the sidebar for full analysis\n"
+                    "- **Type a message** below — paste responses directly or ask questions\n\n"
+                    "Try: *'Analyse: Great service! / Very slow delivery / Best experience ever'*"
+                )
 
     # Chat input
     if prompt := st.chat_input("Ask the agent or paste survey responses..."):

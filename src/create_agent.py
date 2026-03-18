@@ -26,9 +26,20 @@ import os
 import json
 import sys
 
+# Load .env from project root
+# .env values OVERRIDE existing env vars to avoid stale terminal sessions
+_env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ[_k.strip()] = _v.strip().strip('"')
+
 from azure.identity import DefaultAzureCredential
 from azure.ai.projects import AIProjectClient
-from azure.ai.agents.models import McpTool, ToolSet, MCPToolResource, FunctionTool
+from azure.ai.agents.models import McpTool, ToolSet, MCPToolResource, FunctionTool, FabricTool
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -45,19 +56,28 @@ LANGUAGE_MCP_URL = (
     f"{AI_SERVICES_ENDPOINT.rstrip('/')}/language/mcp?api-version=2025-11-15-preview"
 )
 
+# Fabric Data Agent (built-in tool) — requires a project connection
+FABRIC_CONNECTION_NAME = os.environ.get("FABRIC_CONNECTION_NAME", "")
+
 # ─── System prompts ───────────────────────────────────────────────────────────
 
 _COMMON_INSTRUCTIONS = """
 Data sources:
-- Survey responses pre-extracted from Excel/CSV files by the UI
+- Survey responses pre-extracted from Excel/CSV files by the UI (local upload)
+- Survey data from Microsoft Fabric semantic models (via the Fabric data agent tool)
 
-When you receive survey responses:
+When you receive survey responses (from file upload):
 - You will receive a numbered list of text responses already extracted from the file
 - The user has already selected the correct column(s) and prepared the data
 - If analyzing multiple columns, responses will be labeled like "[ColumnName] response text"
 - Call the Language analysis tools on the responses (batch up to 10 at a time)
 - DO NOT attempt to read files yourself - the responses are already provided as text
 - Provide a comprehensive summary of the analysis results
+
+When the user asks to query Fabric data:
+- Use the Microsoft Fabric tool to retrieve survey data from the semantic model
+- Then analyze the retrieved responses using the Language analysis tools
+- Present results in the same structured format as file uploads
 
 When analyzing multiple columns:
 - Consider each column separately when identifying patterns
@@ -104,6 +124,13 @@ You have access to these language analysis functions:
 - recognize_pii_entities — detect and redact personal data
 - detect_language        — identify the language of each response
 
+You also have a fabric_dataagent tool for querying Microsoft Fabric semantic models.
+
+How to decide which tools to use:
+- If the user message contains numbered survey responses (text data) → analyze them directly with Language tools. Do NOT call the Fabric tool.
+- If the user message asks to query, retrieve, or get data → call the fabric_dataagent tool FIRST to fetch the data, then analyze the results with Language tools.
+- Never ask the user to clarify which data source to use — the message content makes it clear.
+
 Always batch multiple documents into a single function call (up to 10 per call).
 """
     + _COMMON_INSTRUCTIONS
@@ -126,18 +153,24 @@ You have direct access to all Azure AI Language capabilities as MCP tools:
 # ─── Agent builders ───────────────────────────────────────────────────────────
 
 def _build_sdk_agent(client: AIProjectClient) -> object:
-    """Create agent with Language SDK function tools."""
+    """Create agent with Language SDK function tools and optional Fabric Data Agent."""
     from language_tools import TOOL_DEFINITIONS  # local import to avoid SDK dep at top
 
     # raw_function_defs is a list of {type, function {...}} dicts
-    raw_function_defs = TOOL_DEFINITIONS
-
+    tools = TOOL_DEFINITIONS.copy()
+    
+    # Add Fabric Data Agent as a built-in tool if connection is configured
+    if FABRIC_CONNECTION_NAME:
+        conn_id = client.connections.get(FABRIC_CONNECTION_NAME).id
+        fabric = FabricTool(connection_id=conn_id)
+        tools.extend(fabric.definitions)
+        print(f"✓ Fabric Data Agent added (connection: {FABRIC_CONNECTION_NAME})")
+    
     return client.agents.create_agent(
         model=GPT_DEPLOYMENT,
         name="sentiment-analysis-agent",
         instructions=AGENT_SYSTEM_PROMPT_SDK,
-        tools=raw_function_defs,
-        tool_resources=None,
+        tools=tools,
     )
 
 
@@ -174,6 +207,9 @@ def main() -> None:
 
     credential = DefaultAzureCredential()
     client = AIProjectClient(endpoint=endpoint, credential=credential)
+
+    if FABRIC_CONNECTION_NAME:
+        print(f"Fabric connection:             {FABRIC_CONNECTION_NAME}")
 
     if TOOL_MODE == "mcp":
         agent = _build_mcp_agent(client)
