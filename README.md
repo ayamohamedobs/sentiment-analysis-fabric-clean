@@ -347,25 +347,50 @@ az login
 
 ### Microsoft Fabric Setup
 
-To enable the Fabric Semantic Model data source:
+Both the Fabric resources and the Foundry connection are created **manually in their respective portals** (not provisioned by Bicep).
 
-1. **Deploy a Fabric Data Agent** in your Microsoft Fabric workspace
-   - Create a semantic model (e.g., `rsa-survey`) with your survey data
-   - Create and publish a Data Agent that connects to the semantic model
+> **Best Practice:** In a production environment, Step 2 (the Foundry project connection to Fabric) should be provisioned via Bicep using the `Microsoft.CognitiveServices/accounts/projects/connections` resource type, similar to how the Language service connection is already defined in `infra/resources.bicep`. The Fabric capacity can also be provisioned via Bicep (`Microsoft.Fabric/capacities`). However, Fabric workspace artifacts such as semantic models and Data Agents (Step 1) must still be created in the Fabric portal as they are not Azure Resource Manager resources.
 
-2. **Create a Fabric connection in the Foundry portal**
-   - Go to [AI Foundry](https://ai.azure.com) → your project → **Management Center** → **Connected Resources**
-   - Click **+ New connection** → select **Microsoft Fabric**
-   - Enter your Fabric **Workspace ID** and **Artifact ID** (the Data Agent)
-   - Set authentication to **User identity** (On-Behalf-Of)
-   - Save and note the connection name
+#### Step 1: Create the Fabric Data Agent (in Microsoft Fabric portal)
 
-3. **Set the connection name in `.env`**
+1. Go to [Microsoft Fabric](https://app.fabric.microsoft.com)
+2. Open or create a **workspace** (e.g., `KatWorkspace`)
+3. **Import your survey data** into a Lakehouse or Data Warehouse
+4. **Create a semantic model** from the data:
+   - Click **+ New** → **Semantic model**
+   - Name it (e.g., `rsa-survey`)
+   - Select the table(s) containing survey responses
+   - Publish the model
+5. **Create a Data Agent**:
+   - Click **+ New** → **Data Agent**
+   - Select your semantic model as the data source
+   - Test the agent with sample queries (e.g., "Get all survey responses")
+   - Click **Publish** to make the agent available
+
+6. **Note your IDs** from the Fabric URL:
+   - **Workspace ID**: the GUID after `/workspaces/` in the URL
+   - **Artifact ID**: the GUID after `/dataagents/` in the URL
+
+#### Step 2: Create a Fabric connection (in Azure AI Foundry portal)
+
+1. Go to [Azure AI Foundry](https://ai.azure.com) → open your project
+2. Navigate to **Management Center** → **Connected Resources**
+3. Click **+ New connection** → select **Microsoft Fabric**
+4. Fill in:
+   - **Connection name**: e.g., `fabric-rsa-survey`
+   - **Workspace ID**: from step 1
+   - **Artifact ID**: from step 1
+   - **Authentication**: **User identity** (On-Behalf-Of)
+5. Click **Save**
+
+#### Step 3: Configure and recreate the agent
+
+1. Set the connection name in `.env`:
    ```
-   FABRIC_CONNECTION_NAME="your-connection-name"
+   FABRIC_CONNECTION_NAME="fabric-rsa-survey"
    ```
 
-4. **Recreate the agent** to pick up the Fabric tool
+2. Recreate the agent to pick up the Fabric tool:
    ```powershell
    python src/create_agent.py
    ```
