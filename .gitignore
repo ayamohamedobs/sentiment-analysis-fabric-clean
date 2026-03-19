@@ -4,6 +4,9 @@
 # Agent configuration (contains agent ID)
 agent_config.json
 
+# Bicep compiled ARM template (auto-generated)
+infra/main.json
+
 # Python
 __pycache__/
 *.py[cod]

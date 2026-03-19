@@ -12,14 +12,179 @@ AI-powered survey analysis using **Azure AI Foundry Agent** with **Azure AI Lang
 - 📊 **Multi-column analysis** — Select 1-2 columns from Excel/CSV files
 - 🔗 **Microsoft Fabric integration** — Query survey data directly from Fabric semantic models via the built-in Fabric Data Agent tool
 - 🤖 **AI-powered insights** — GPT-4o agent with Azure Language integration
-- 💬 **Interactive chat** — Ask questions and get detailed analysis
+- 💬 **Interactive chat** — Ask follow-up questions and get detailed analysis
 - 📈 **Comprehensive metrics** — Sentiment distribution, themes, key phrases, entities
 - 🔒 **Zero API keys** — All auth via managed identity
 - ⚡ **Batch processing** — Analyzes up to 100 responses per file
 
-## Architecture
+---
 
-The solution supports two data sources — local file upload and Microsoft Fabric semantic models:
+## Table of Contents
+
+1. [Prerequisites](#prerequisites)
+2. [Getting Started](#getting-started)
+3. [Adding Microsoft Fabric (Optional)](#adding-microsoft-fabric-optional)
+4. [Usage](#usage)
+5. [Architecture](#architecture)
+6. [Infrastructure](#infrastructure)
+7. [Configuration Reference](#configuration-reference)
+8. [Development](#development)
+9. [Troubleshooting](#troubleshooting)
+10. [Cost Considerations](#cost-considerations)
+
+---
+
+## 1. Prerequisites
+
+- Azure subscription with appropriate credits
+- [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) (`az`)
+- [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) (`azd`)
+- Python 3.10+
+
+```powershell
+# Install on Windows
+winget install Microsoft.AzureCLI
+winget install Microsoft.Azd
+winget install Python.Python.3.11
+```
+
+---
+
+## 2. Getting Started
+
+### Option A: Automated (Recommended)
+
+```powershell
+git clone https://github.com/katkostro/sentiment-analysis-fabric.git
+cd sentiment-analysis-fabric
+az login
+./deploy.ps1
+streamlit run src/app.py
+```
+
+The script provisions all Azure infrastructure, creates the `.env` file, installs Python dependencies, and creates the AI agent.
+
+### Option B: Manual Step-by-Step
+
+```powershell
+# 1. Clone and authenticate
+git clone https://github.com/katkostro/sentiment-analysis-fabric.git
+cd sentiment-analysis-fabric
+az login
+
+# 2. Deploy infrastructure (prompts for environment name and region)
+azd up
+
+# 3. Create .env file from deployed resources
+azd env get-values | Out-File -FilePath .env -Encoding utf8
+
+# 4. Install dependencies
+pip install -r src/requirements.txt
+
+# 5. Create the AI agent
+python src/create_agent.py
+
+# 6. Launch the UI
+streamlit run src/app.py
+```
+
+Open http://localhost:8501 in your browser.
+
+---
+
+## 3. Adding Microsoft Fabric (Optional)
+
+Fabric integration lets you query survey data directly from a Fabric semantic model using natural language. Skip this section if you only need local file analysis.
+
+### Step 1 — Create Fabric artifacts in the Fabric portal
+
+1. Go to [Microsoft Fabric](https://app.fabric.microsoft.com)
+2. Open or create a **workspace**
+3. **Import your survey data** into a Lakehouse or Data Warehouse
+4. **Create a semantic model** from the data:
+   - **+ New** → **Semantic model** → select the survey table(s) → Publish
+5. **Create a Data Agent**:
+   - **+ New** → **Data Agent** → select your semantic model → test with sample queries → **Publish**
+6. **Note your IDs** from the Fabric URL:
+   - **Workspace ID** — the GUID after `/workspaces/`
+   - **Artifact ID** — the GUID after `/dataagents/`
+
+### Step 2 — Deploy with Fabric enabled
+
+```powershell
+azd env set AZURE_ENABLE_FABRIC true
+azd env set AZURE_FABRIC_WORKSPACE_ID "<workspace-id>"
+azd env set AZURE_FABRIC_ARTIFACT_ID "<artifact-id>"
+azd env set AZURE_FABRIC_ADMIN_EMAIL "your-email@example.com"
+azd up
+```
+
+This provisions a **Fabric capacity** (F2 SKU) and a **Foundry connection** linking the project to your Fabric Data Agent.
+
+### Step 3 — Regenerate config and recreate the agent
+
+```powershell
+azd env get-values | Out-File -FilePath .env -Encoding utf8
+python src/create_agent.py
+```
+
+> **Note:** Your Fabric workspace and Foundry project must be in the same Entra ID tenant for identity passthrough to work.
+
+---
+
+## 4. Usage
+
+### Analyzing Local Files
+
+1. Select **"Local File"** in the sidebar
+2. Upload an Excel (`.xlsx`, `.xls`) or CSV file
+3. Choose 1-2 columns to analyze (app auto-selects the most likely response column)
+4. Click **"Analyse File"**
+
+The agent processes up to 100 responses and returns a structured report:
+
+| Section | Content |
+|---------|---------|
+| **Customer Sentiment Overview** | Executive summary with key insights |
+| **Where Sentiment Breaks Down** | Sentiment percentages by theme |
+| **Key Drivers of Negative Sentiment** | Top 5 recurring issues |
+| **Key Drivers of Positive Sentiment** | Top strengths customers praise |
+| **Insight-Driven Recommendations** | Prioritized actions with reasoning |
+
+**Multi-column analysis:** When 2 columns are selected, the agent labels responses with `[ColumnName]`, analyzes each column separately, and highlights differences in sentiment between them.
+
+### Querying Microsoft Fabric
+
+*(Requires Fabric setup from [Section 3](#adding-microsoft-fabric-optional))*
+
+1. Select **"Fabric Semantic Model"** in the sidebar
+2. Type a natural language query, e.g.:
+   - *"Get all survey responses"*
+   - *"Show responses where satisfaction rating is below 3"*
+   - *"What tables and columns are available?"*
+3. Click **"Query & Analyze"**
+
+The Foundry Agent calls the Fabric Data Agent to retrieve data, runs Language analysis tools, and returns the same structured report.
+
+### Chat
+
+After any analysis, use the chat to ask follow-up questions, request specific breakdowns, or get clarifications.
+
+### Supported File Formats
+
+| Format | Notes |
+|--------|-------|
+| `.xlsx` | Office Open XML (preferred) |
+| `.xls` | Legacy Excel (requires `xlrd`) |
+| `.csv` | Auto-detects UTF-8, Latin-1, or CP1252 encoding |
+| `.html` | Tables in HTML files |
+
+- DRM-protected files are detected with user guidance to save an unprotected copy
+- First 100 responses are processed per analysis
+
+---
+
+## 5. Architecture
 
 ```
                     ┌──────────────────────────────────────────────────────────────┐
@@ -46,360 +211,84 @@ The solution supports two data sources — local file upload and Microsoft Fabri
 
 | Step | Component | Action |
 |------|-----------|--------|
-| 1 | **User** | Uploads a file OR types a natural language query for Fabric |
+| 1 | **User** | Uploads a file OR types a natural language query |
 | 2 | **Streamlit UI** | Parses file / sends query to the Foundry Agent |
-| 3 | **Foundry Agent** | For Fabric queries: calls the `fabric_dataagent` tool to retrieve data |
-| 4 | **Fabric Data Agent** | Translates query to DAX, fetches rows from the semantic model |
-| 5 | **Foundry Agent** | Calls Language tools (sentiment, key phrases, entities) on the data |
-| 6 | **Language Service** | Returns NLP analysis results |
-| 7 | **Foundry Agent** | Compiles 5-section structured analysis report |
+| 3 | **Foundry Agent** | For Fabric queries: calls `fabric_dataagent` to retrieve data |
+| 4 | **Foundry Agent** | Calls Language tools (sentiment, key phrases, entities) on the data |
+| 5 | **Language Service** | Returns NLP analysis results |
+| 6 | **Foundry Agent** | Compiles structured 5-section analysis report |
 
-### Tool Architecture: Dual-Mode Design
+### Language Tools
 
-The agent supports two modes for calling Azure AI Language services:
+| Function | Description |
+|----------|-------------|
+| `analyze_sentiment` | Document & sentence-level sentiment with confidence scores |
+| `extract_key_phrases` | Identify main topics and themes |
+| `recognize_entities` | Detect people, places, organizations, dates |
+| `detect_language` | Identify the language of text |
+| `recognize_pii_entities` | Detect personal data (email, phone, SSN, etc.) |
 
-**SDK Mode (Current)** — Function tools executed locally
-- Agent calls Language analysis functions (`analyze_sentiment`, `extract_key_phrases`, etc.)
-- Streamlit app intercepts tool calls and executes them using Azure Language SDK
-- Uses managed identity for authentication
-- **Status**: ✅ Working
+All functions support batching up to 10 documents per call.
 
-**MCP Mode (Future)** — Direct MCP server integration
-- Agent calls Language services via MCP protocol
-- Requires Azure AI Agent Service to support Streamable HTTP transport
-- **Status**: ⏸️ Blocked by transport incompatibility (Agent Service uses SSE, Language MCP requires POST)
+### Tool Modes
 
-Mode is controlled by `LANGUAGE_TOOL_MODE` environment variable (defaults to `sdk`).
+| Mode | Status | Description |
+|------|--------|-------------|
+| **SDK** (default) | ✅ Working | Language tools executed locally via Python SDK |
+| **MCP** (future) | ⏸️ Blocked | Waiting for Agent Service to support Streamable HTTP transport |
 
-## Project Structure
+Set via `LANGUAGE_TOOL_MODE` environment variable.
 
-```
-sentiment-analysis/
-├── infra/
-│   ├── main.bicep            # Infrastructure-as-Code (subscription scope)
-│   ├── resources.bicep       # All Azure resources (AI Services, Language, etc.)
-│   └── resources.bicepparam  # Parameter values
-├── src/
-│   ├── app.py               # Streamlit web UI + file handling + Fabric queries
-│   ├── create_agent.py      # Agent provisioning (Language + Fabric tools)
-│   ├── language_tools.py    # Language SDK function tool implementations
-│   └── test_sdk.py          # End-to-end test for SDK mode
-├── .env.example             # Environment variable template
-├── agent_config.json        # Auto-generated agent config (ID, endpoint, mode)
-├── azure.yaml               # Azure Developer CLI config
-├── deploy.ps1               # Automated deployment script
-└── README.md                # This file
-```
+---
 
-## Infrastructure
+## 6. Infrastructure
 
-Provisioned by `infra/resources.bicep` — all resources use **managed identity**:
+All resources are provisioned by Bicep (`infra/resources.bicep`) using **managed identity** — no API keys.
 
-| Resource | Type | Purpose |
-|---|---|---|
-| **Azure AI Services** | `Microsoft.CognitiveServices/accounts` (AIServices) | Foundry host + project container |
-| **Foundry Project** | `accounts/projects` | `sentiment-analysis` project |
-| **GPT-4o** | `accounts/deployments` | Agent's LLM (50K TPM capacity) |
-| **Azure AI Language** | `accounts` (TextAnalytics) | NLP APIs for sentiment, NER, key phrases, PII |
-| **Log Analytics Workspace** | `Microsoft.OperationalInsights/workspaces` | Centralized logging and monitoring backend |
-| **Application Insights** | `Microsoft.Insights/components` | Agent telemetry, request tracking, and performance monitoring |
-| **Fabric Connection** | `accounts/projects/connections` | Connection to Microsoft Fabric Data Agent (optional) |
+### Resources
+
+| Resource | Purpose |
+|----------|---------|
+| **Azure AI Services** | Foundry host + project container |
+| **Foundry Project** | `sentiment-analysis` project |
+| **GPT-4o Deployment** | Agent's LLM backbone |
+| **Azure AI Language** | NLP APIs (sentiment, NER, key phrases, PII) |
+| **Log Analytics Workspace** | Centralized logging backend |
+| **Application Insights** | Agent telemetry and performance monitoring |
+| **Diagnostic Settings** | Routes AI Services logs/metrics to Log Analytics |
+| **Fabric Capacity** *(optional)* | F2 SKU compute (when `enableFabric = true`) |
+| **Fabric Connection** *(optional)* | Links Foundry project to Fabric Data Agent |
 
 ### Role Assignments
 
-- AI Services → Language Service: `Cognitive Services User`
-- Foundry Project → Language Service: `Cognitive Services User`
+| Source | Target | Role |
+|--------|--------|------|
+| AI Services | Language Service | `Cognitive Services User` |
+| Foundry Project | Language Service | `Cognitive Services User` |
 
-### Monitoring & Telemetry
+### Monitoring
 
-The application integrates with **Azure Application Insights** to provide:
-- **Request Tracing**: Track agent message processing end-to-end
-- **Tool Execution Metrics**: Monitor Language SDK tool calls (sentiment analysis, key phrase extraction, etc.)
-- **File Analysis Tracking**: Monitor survey file uploads and processing
-- **Performance Insights**: Response times, error rates, and usage patterns
+Application Insights provides request tracing, tool execution metrics, and performance insights when `APPLICATIONINSIGHTS_CONNECTION_STRING` is configured. The `AIAgentsInstrumentor` enables Gen AI trace emission from the agents SDK.
 
-Telemetry is automatically sent when `APPLICATIONINSIGHTS_CONNECTION_STRING` is configured.
+---
 
-## Azure AI Language Capabilities
-
-The agent has access to these Language SDK functions:
-
-| Function | API | Description |
-|---|---|---|
-| `analyze_sentiment` | Sentiment Analysis | Document & sentence-level sentiment with confidence scores |
-| `extract_key_phrases` | Key Phrase Extraction | Identify main topics and themes |
-| `recognize_entities` | Named Entity Recognition | Detect people, places, organizations, dates |
-| `detect_language` | Language Detection | Identify the language of text |
-| `recognize_pii_entities` | PII Detection | Detect personal data (email, phone, SSN, etc.) |
-
-All functions support batching up to 10 documents per call for efficiency.
-
-## Prerequisites
-
-**Required:**
-- Azure subscription with appropriate credits (GPT-4o deployment required)
-- [Azure CLI](https://docs.microsoft.com/cli/azure/install-azure-cli) (`az`)
-- [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) (`azd`)
-- Python 3.10 or later
-
-**Install prerequisites on Windows:**
-```powershell
-winget install Microsoft.AzureCLI
-winget install Microsoft.Azd
-winget install Python.Python.3.11
-```
-
-## Quick Start
-
-### Option A: Automated Deployment (Recommended)
-
-```powershell
-# 1. Clone the repository
-git clone https://github.com/katkostro/sentiment-analysis.git
-cd sentiment-analysis
-
-# 2. Authenticate to Azure
-az login
-
-# 3. Run automated deployment script
-./deploy.ps1
-
-# 4. Start the UI
-streamlit run src/app.py
-```
-
-The script will:
-- Provision all Azure infrastructure
-- Create the `.env` file automatically
-- Install Python dependencies
-- Create the AI agent
-
-### Option B: Manual Step-by-Step
-
-```powershell
-# 1. Clone and navigate to repository
-git clone https://github.com/katkostro/sentiment-analysis.git
-cd sentiment-analysis
-
-# 2. Authenticate to Azure
-az login
-
-# 3. Deploy infrastructure (will prompt for environment name and region)
-azd up
-
-# 4. Create environment variables file
-azd env get-values | Out-File -FilePath .env -Encoding utf8
-
-# 5. Install Python dependencies
-pip install -r src/requirements.txt
-
-# 6. Create the agent
-python src/create_agent.py
-
-# 7. Start the Streamlit UI
-streamlit run src/app.py
-```
-
-**Infrastructure deployed:**
-- Azure AI Services + Foundry Project
-- GPT-4o deployment (50K TPM capacity)
-- Azure AI Language service
-- Log Analytics Workspace + Application Insights
-- RBAC role assignments for managed identity
-
-Open http://localhost:8501 in your browser.
-
-## Usage
-
-### Option 1: Analyzing Local Files
-
-1. **Upload File**
-   - Select **"Local File"** in the sidebar
-   - Click "Browse files" and select an Excel (.xlsx, .xls) or CSV file
-   - File is parsed automatically
-
-2. **Select Columns**
-   - Choose 1-2 columns to analyze
-   - App auto-selects the most likely response column
-   - Preview shows sample values from each selected column
-
-3. **Analyze**
-   - Click "Analyse File"
-   - Agent processes up to 100 responses (first 100 if file is larger)
-   - Results are presented in a structured format:
-     1. **Customer Sentiment Overview** — Executive summary with key insights
-     2. **Where Sentiment Breaks Down** — Table showing sentiment percentages by theme (Technical Support Quality, Communication, Tools, Documentation, Product Features, etc.)
-     3. **Key Drivers of Negative Sentiment** — Top 5 recurring issues with their share of negative impact
-     4. **Key Drivers of Positive Sentiment** — Top strengths customers consistently praise
-     5. **Insight-Driven Recommendations** — Numbered, prioritized recommendations with reasoning and specific actions
-
-### Multi-Column Analysis
-
-When analyzing 2 columns, the agent will:
-- Label responses with `[ColumnName]` prefix
-- Identify patterns in each column separately
-- Highlight differences in sentiment or themes between columns
-- Note if certain columns have more negative feedback
-
-### Option 2: Querying Microsoft Fabric
-
-When a Fabric connection is configured, the sidebar shows a **"Fabric Semantic Model"** option:
-
-1. **Select Data Source**
-   - Choose **"Fabric Semantic Model"** in the sidebar
-
-2. **Enter Query**
-   - Type a natural language query in the text area
-   - Examples:
-     - "Get all survey responses"
-     - "Show responses where satisfaction rating is below 3"
-     - "Get the first 20 responses from the Comments column"
-     - "What tables and columns are available?"
-
-3. **Query & Analyze**
-   - Click "Query & Analyze"
-   - The Foundry Agent calls the Fabric Data Agent to retrieve data
-   - Then runs Language analysis tools on the results
-   - Presents the same structured 5-section report
-
-### Chat Interface
-
-After analysis (from either data source), you can:
-- Ask follow-up questions about the results
-- Request specific breakdowns (e.g., "show only negative responses")
-- Get clarifications on themes or recommendations
-
-## File Format Support
-
-### Supported Formats
-
-- **Excel**: `.xlsx` (Office Open XML, preferred)
-- **Excel**: `.xls` (Legacy format, requires `xlrd`)
-- **CSV**: UTF-8, Latin-1, or CP1252 encoding
-- **HTML**: Tables in HTML files
-
-### File Handling
-
-- **DRM Detection**: Detects password-protected or DRM-encrypted Excel files
-- **Column Detection**: Auto-selects columns with longest text (skips ID columns like "ID", "Code", "Date")
-- **Encoding Fallback**: Tries UTF-8 → Latin-1 → CP1252 for CSV files
-- **Size Limit**: Processes first 100 responses to avoid rate limits and long runtimes
-
-## Authentication
-
-All authentication uses **Azure Managed Identity** (`DefaultAzureCredential`):
-
-- **No API keys** — `disableLocalAuth: true` on all cognitive services
-- **Service-to-service** — RBAC role assignments grant permissions
-- **Local development** — Falls back to Azure CLI or VS Code credentials
-
-When running locally, ensure you're logged in:
-```powershell
-az login
-```
-
-## Error Handling
-
-### Rate Limiting
-
-- GPT-4o deployment capacity: 50K TPM (tokens per minute)
-- App retries with exponential backoff on rate limit errors
-- Parses retry-after from API responses
-- Shows progress toasts in UI
-
-### Run Management
-
-- Cancels active runs before posting new messages (prevents "run is active" errors)
-- 5-minute timeout for agent runs
-- Polls run status with progressive backoff
-
-### File Errors
-
-- DRM-protected files: Shows user guidance to save unprotected copy
-- Column detection failure: Shows all columns for manual selection
-- Empty columns: Warns user before analysis
-
-## Known Issues
-
-### MCP Transport Incompatibility
-
-**Issue**: Azure AI Agent Service uses SSE (Server-Sent Events) transport for MCP, but Azure Language MCP server requires Streamable HTTP (POST-only).
-
-**Impact**: MCP mode (`LANGUAGE_TOOL_MODE=mcp`) is currently non-functional.
-
-**Workaround**: SDK mode (`LANGUAGE_TOOL_MODE=sdk`) executes Language tools locally via the Python SDK.
-
-**Resolution**: Waiting for Agent Service to add Streamable HTTP support (preview feature).
-
-## Configuration
+## 7. Configuration Reference
 
 ### Environment Variables
 
-| Variable | Required | Description |
-|---|---|---|
-| `AZURE_AI_SERVICES_ENDPOINT` | Yes | AI Services endpoint (includes Foundry) |
-| `AZURE_LANGUAGE_ENDPOINT` | Yes | Language service endpoint |
-| `FOUNDRY_PROJECT_NAME` | No | Project name (default: `sentiment-analysis`) |
-| `GPT_DEPLOYMENT_NAME` | No | GPT deployment name (default: `gpt-4o`) |
-| `LANGUAGE_TOOL_MODE` | No | Tool mode: `sdk` or `mcp` (default: `sdk`) |
-| `FABRIC_CONNECTION_NAME` | No | Foundry project connection name for Microsoft Fabric Data Agent |
-| `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | Application Insights connection string for telemetry |
-
-### Microsoft Fabric Setup
-
-Both the Fabric resources and the Foundry connection are created **manually in their respective portals** (not provisioned by Bicep).
-
-> **Best Practice:** In a production environment, Step 2 (the Foundry project connection to Fabric) should be provisioned via Bicep using the `Microsoft.CognitiveServices/accounts/projects/connections` resource type, similar to how the Language service connection is already defined in `infra/resources.bicep`. The Fabric capacity can also be provisioned via Bicep (`Microsoft.Fabric/capacities`). However, Fabric workspace artifacts such as semantic models and Data Agents (Step 1) must still be created in the Fabric portal as they are not Azure Resource Manager resources.
-
-#### Step 1: Create the Fabric Data Agent (in Microsoft Fabric portal)
-
-1. Go to [Microsoft Fabric](https://app.fabric.microsoft.com)
-2. Open or create a **workspace** (e.g., `KatWorkspace`)
-3. **Import your survey data** into a Lakehouse or Data Warehouse
-4. **Create a semantic model** from the data:
-   - Click **+ New** → **Semantic model**
-   - Name it (e.g., `rsa-survey`)
-   - Select the table(s) containing survey responses
-   - Publish the model
-5. **Create a Data Agent**:
-   - Click **+ New** → **Data Agent**
-   - Select your semantic model as the data source
-   - Test the agent with sample queries (e.g., "Get all survey responses")
-   - Click **Publish** to make the agent available
-
-6. **Note your IDs** from the Fabric URL:
-   - **Workspace ID**: the GUID after `/workspaces/` in the URL
-   - **Artifact ID**: the GUID after `/dataagents/` in the URL
-
-#### Step 2: Create a Fabric connection (in Azure AI Foundry portal)
-
-1. Go to [Azure AI Foundry](https://ai.azure.com) → open your project
-2. Navigate to **Management Center** → **Connected Resources**
-3. Click **+ New connection** → select **Microsoft Fabric**
-4. Fill in:
-   - **Connection name**: e.g., `fabric-rsa-survey`
-   - **Workspace ID**: from step 1
-   - **Artifact ID**: from step 1
-   - **Authentication**: **User identity** (On-Behalf-Of)
-5. Click **Save**
-
-#### Step 3: Configure and recreate the agent
-
-1. Set the connection name in `.env`:
-   ```
-   FABRIC_CONNECTION_NAME="fabric-rsa-survey"
-   ```
-
-2. Recreate the agent to pick up the Fabric tool:
-   ```powershell
-   python src/create_agent.py
-   ```
-
-> **Note:** Your Fabric workspace and Foundry project must be in the same Entra ID tenant for identity passthrough to work.
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AZURE_AI_SERVICES_ENDPOINT` | Yes | — | AI Services endpoint |
+| `AZURE_LANGUAGE_ENDPOINT` | Yes | — | Language service endpoint |
+| `FOUNDRY_PROJECT_NAME` | No | `sentiment-analysis` | Foundry project name |
+| `GPT_DEPLOYMENT_NAME` | No | `gpt-4o` | GPT model deployment name |
+| `LANGUAGE_TOOL_MODE` | No | `sdk` | Tool mode: `sdk` or `mcp` |
+| `FABRIC_CONNECTION_NAME` | No | — | Fabric connection name in Foundry |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | No | — | App Insights connection string |
 
 ### Agent Configuration
 
-`agent_config.json` is created by `create_agent.py` and contains:
+`agent_config.json` is auto-generated by `create_agent.py`:
 
 ```json
 {
@@ -411,107 +300,79 @@ Both the Fabric resources and the Foundry connection are created **manually in t
 }
 ```
 
-## Testing
+### Project Structure
 
-### Test SDK Mode
+```
+sentiment-analysis/
+├── infra/
+│   ├── main.bicep              # IaC entry point (subscription scope)
+│   ├── resources.bicep         # All Azure resources
+│   └── resources.bicepparam    # Parameter values
+├── src/
+│   ├── app.py                  # Streamlit UI + agent interaction
+│   ├── create_agent.py         # Agent provisioning script
+│   ├── language_tools.py       # Language SDK tool implementations
+│   └── test_sdk.py             # End-to-end SDK mode test
+├── agent_config.json           # Auto-generated agent config
+├── azure.yaml                  # Azure Developer CLI config
+├── deploy.ps1                  # Automated deployment script
+└── README.md
+```
+
+---
+
+## 8. Development
+
+### Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Frontend | Streamlit 1.32+ |
+| Agent SDK | `azure-ai-agents` 1.2.0b5 |
+| Language SDK | `azure-ai-textanalytics` 5.3+ |
+| Auth | `azure-identity` 1.15+ (DefaultAzureCredential) |
+| IaC | Bicep + Azure Developer CLI |
+
+### Adding New Language Tools
+
+1. Add function definition to `language_tools.py` (`TOOL_DEFINITIONS`)
+2. Implement the function in the `TOOL_DISPATCH` dict
+3. Update agent instructions in `create_agent.py`
+4. Recreate the agent: `python src/create_agent.py`
+
+### Testing
 
 ```powershell
 python src/test_sdk.py
 ```
 
-This runs an end-to-end test:
-1. Creates a thread
-2. Sends a test message
-3. Waits for agent to call SDK tools
-4. Executes tools locally
-5. Returns results
+Runs an end-to-end test: creates a thread, sends a test message, executes Language tools, and returns results.
 
-Expected output: Sentiment analysis + key phrases for test text.
+---
 
-## Cost Considerations
+## 9. Troubleshooting
 
-### Azure Resources
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| *"No assistant found with id 'asst_...'"* | Agent deleted or config stale | `python src/create_agent.py`, then restart Streamlit |
+| *"Rate limit exceeded"* | GPT-4o capacity exceeded | App retries automatically; wait or increase `gptCapacity` in Bicep |
+| File upload fails | DRM protection or encoding | Save unprotected copy; convert CSV to UTF-8 |
+| Agent not responding | Active run blocking the thread | Click **"🗑️ New Conversation"** in the sidebar |
+| App Insights empty | `.env` has BOM or missing instrumentor | Regenerate `.env`; ensure `AIAgentsInstrumentor` is enabled |
 
-- **Azure AI Services**: AI Services SKU
-- **GPT-4o Deployment**: ~$0.03 per 1K input tokens, ~$0.06 per 1K output tokens
-- **Language Service**: Standard tier, ~$2 per 1K text records
+---
 
-### Optimization Tips
+## 10. Cost Considerations
 
-- Process files in batches (app limits to 100 responses)
-- Use multi-column analysis sparingly (doubles API calls)
-- Monitor GPT-4o capacity (50K TPM deployed by default)
-- Consider lower GPT capacity if budget-constrained (edit `infra/resources.bicep`)
+| Resource | Approximate Cost |
+|----------|-----------------|
+| GPT-4o | ~$0.03 / 1K input tokens, ~$0.06 / 1K output tokens |
+| Language Service | ~$2 / 1K text records |
+| Fabric Capacity (F2) | [See Fabric pricing](https://azure.microsoft.com/pricing/details/microsoft-fabric/) |
 
-## Development
+**Tips:** Process files in batches (app limits to 100 responses) · use multi-column analysis sparingly · monitor GPT-4o TPM usage · reduce `gptCapacity` in Bicep if budget-constrained.
 
-### Project Stack
-
-- **Frontend**: Streamlit 1.32+
-- **Agent SDK**: `azure-ai-agents` 1.2.0b5
-- **Language SDK**: `azure-ai-textanalytics` 5.3+
-- **Auth**: `azure-identity` 1.15+
-- **IaC**: Bicep + Azure Developer CLI
-
-### Adding New Language Capabilities
-
-1. Add function definition to `language_tools.py`:
-   ```python
-   TOOL_DEFINITIONS.append({
-       "type": "function",
-       "function": {
-           "name": "your_function",
-           "description": "...",
-           "parameters": { ... }
-       }
-   })
-   ```
-
-2. Implement function in `TOOL_DISPATCH` dict
-
-3. Update agent instructions in `create_agent.py`
-
-4. Recreate agent: `python src/create_agent.py`
-
-## Troubleshooting
-
-### "No assistant found with id 'asst_...'"
-
-**Cause**: Agent was deleted or `agent_config.json` is stale.
-
-**Fix**: Recreate agent:
-```powershell
-python src/create_agent.py
-```
-Then restart Streamlit app.
-
-### "Rate limit exceeded"
-
-**Cause**: GPT-4o capacity (50K TPM) exceeded.
-
-**Fix**: 
-- App retries automatically with backoff
-- Wait for rate limit window to reset
-- Or increase capacity in `infra/resources.bicep` (edit `gptCapacity`)
-
-### File Upload Issues
-
-**Cause**: DRM protection, unsupported format, or encoding issues.
-
-**Fix**:
-- For DRM files: Save unprotected copy in Excel
-- For encoding: Convert CSV to UTF-8
-- For unsupported formats: Convert to .xlsx or .csv
-
-### Agent Not Responding
-
-**Cause**: Active run blocking the thread.
-
-**Fix**: App auto-cancels active runs. If issue persists:
-```powershell
-# Create new conversation
-# Click "🗑️ New Conversation" in sidebar
-```
+---
 
 ## License
 
@@ -519,15 +380,7 @@ MIT
 
 ## Contributing
 
-Contributions welcome! Please:
 1. Fork the repository
 2. Create a feature branch
-3. Test changes with `src/test_sdk.py`
+3. Test changes with `python src/test_sdk.py`
 4. Submit a pull request
-
-## Support
-
-For issues or questions:
-- File an issue on GitHub
-- Check Azure AI Foundry documentation
-- Review Azure Language service docs
