@@ -23,11 +23,26 @@ param gptModelVersion string = '2024-11-20'
 @description('Capacity (TPM in thousands) for the GPT deployment')
 param gptCapacity int = 10
 
-@description('Enable Microsoft Fabric OneLake connection as data source')
-param enableFabric bool = false
+@description('Enable Microsoft Fabric Data Agent connection as data source (true/false)')
+param enableFabric string = 'false'
 
-@description('Fabric OneLake endpoint URL (required when enableFabric = true)')
-param fabricOneLakeEndpoint string = ''
+@description('Fabric connection name in the Foundry project')
+param fabricConnectionName string = 'fabric-rsa-survey'
+
+@description('Microsoft Fabric workspace ID (required when enableFabric = true)')
+param fabricWorkspaceId string = ''
+
+@description('Fabric Data Agent artifact ID (required when enableFabric = true)')
+param fabricArtifactId string = ''
+
+@description('Azure region for the Fabric capacity (defaults to main location)')
+param fabricLocation string = location
+
+@description('Fabric capacity SKU (e.g. F2, F4, F8)')
+param fabricSkuName string = 'F2'
+
+@description('Fabric capacity admin email')
+param fabricAdminEmail string = ''
 
 var tags = {
   'azd-env-name': environmentName
@@ -53,7 +68,12 @@ module resources 'resources.bicep' = {
     gptCapacity: gptCapacity
     tags: tags
     enableFabric: enableFabric
-    fabricOneLakeEndpoint: fabricOneLakeEndpoint
+    fabricConnectionName: fabricConnectionName
+    fabricWorkspaceId: fabricWorkspaceId
+    fabricArtifactId: fabricArtifactId
+    fabricLocation: fabricLocation
+    fabricSkuName: fabricSkuName
+    fabricAdminEmail: fabricAdminEmail
   }
 }
 
@@ -65,3 +85,4 @@ output AZURE_FOUNDRY_PROJECT_ENDPOINT string = resources.outputs.foundryProjectE
 output AZURE_GPT_DEPLOYMENT_NAME string = resources.outputs.gptDeploymentName
 output AZURE_RESOURCE_GROUP string = rg.name
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = resources.outputs.appInsightsConnectionString
+output FABRIC_CONNECTION_NAME string = resources.outputs.fabricConnectionName

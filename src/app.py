@@ -14,7 +14,7 @@ import os
 # .env values OVERRIDE existing env vars to avoid stale terminal sessions
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 if os.path.exists(_env_path):
-    with open(_env_path) as _f:
+    with open(_env_path, encoding="utf-8-sig") as _f:
         for _line in _f:
             _line = _line.strip()
             if _line and not _line.startswith("#") and "=" in _line:
@@ -39,8 +39,10 @@ _appinsights_connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_
 if _appinsights_connection_string:
     try:
         from azure.monitor.opentelemetry import configure_azure_monitor
+        from azure.ai.agents.telemetry import AIAgentsInstrumentor
         configure_azure_monitor(connection_string=_appinsights_connection_string)
-        print("✅ Application Insights monitoring enabled")
+        AIAgentsInstrumentor().instrument()
+        print("✅ Application Insights monitoring enabled (with agents tracing)")
     except ImportError:
         print("⚠️  Application Insights packages not installed. Run: pip install -r requirements.txt")
 else:
@@ -161,14 +163,21 @@ def reset_thread(client: AIProjectClient) -> None:
 
 # ─── SDK tool-call loop ──────────────────────────────────────────────────────
 
-def _execute_sdk_tool_calls(run, client: AIProjectClient, thread_id: str):
-    """Handle requires_action by executing Language SDK function tools."""
+def _build_tool_outputs(run, client: AIProjectClient, thread_id: str, status_widget=None):
+    """Execute Language SDK function tools and submit outputs."""
     from language_tools import TOOL_DISPATCH
 
     tool_outputs = []
-    for call in run.required_action.submit_tool_outputs.tool_calls:
+    calls = run.required_action.submit_tool_outputs.tool_calls
+    for i, call in enumerate(calls, 1):
         fn_name = call.function.name
         fn_args = json.loads(call.function.arguments or "{}")
+        if status_widget:
+            status_widget.update(
+                label=f"Language Tools: {fn_name} ({i}/{len(calls)})",
+                state="running",
+            )
+        t0 = time.time()
         try:
             fn = TOOL_DISPATCH.get(fn_name)
             if fn is None:
@@ -177,75 +186,60 @@ def _execute_sdk_tool_calls(run, client: AIProjectClient, thread_id: str):
                 result = fn(**fn_args)
         except Exception as exc:  # noqa: BLE001
             result = json.dumps({"error": str(exc)})
+        print(f"  ⚙️ {fn_name} took {time.time()-t0:.1f}s")
         tool_outputs.append(ToolOutput(tool_call_id=call.id, output=result))
 
     return client.agents.runs.submit_tool_outputs(
-        thread_id=thread_id,
-        run_id=run.id,
-        tool_outputs=tool_outputs,
+        thread_id=thread_id, run_id=run.id, tool_outputs=tool_outputs,
     )
 
 
-def _wait_for_run(client: AIProjectClient, thread_id: str, run) -> object:
-    """Poll run to completion, handling SDK function tool calls. Times out after 5 min."""
+def _wait_for_run(client: AIProjectClient, thread_id: str, run, status_widget=None, task: str = "chat") -> object:
+    """Poll run to completion, handling SDK function tool calls."""
     terminal = {"completed", "failed", "cancelled", "expired"}
-    deadline = time.time() + 300  # 5 minute hard timeout
+    deadline = time.time() + 300
+    t_start = time.time()
+    t_phase = t_start  # reset per phase
+
+    # Task-specific labels for the initial server-side processing phase
+    phase1_labels = {
+        "fabric": "Foundry Agent \u2192 Fabric Agent: querying data",
+        "file":   "Foundry Agent: processing file",
+        "chat":   "Foundry Agent: thinking",
+    }
+    current_label = phase1_labels.get(task, phase1_labels["chat"])
+    tools_ran = False
+
     while run.status not in terminal:
         if time.time() > deadline:
-            # Cancel the hung run and return a synthetic failure
             try:
                 client.agents.runs.cancel(thread_id=thread_id, run_id=run.id)
             except Exception:
                 pass
             run._data["status"] = "failed"
-            run._data["last_error"] = {"code": "timeout", "message": "Run exceeded 5-minute timeout and was cancelled."}
+            run._data["last_error"] = {"code": "timeout", "message": "Run exceeded 5-minute timeout."}
             return run
-        time.sleep(2)
+        elapsed = int(time.time() - t_phase)
+        if status_widget:
+            status_widget.update(label=f"{current_label}... ({elapsed}s)", state="running")
+        time.sleep(0.5)
         run = client.agents.runs.get(thread_id=thread_id, run_id=run.id)
         if run.status == "requires_action":
-            run = _execute_sdk_tool_calls(run, client, thread_id)
+            print(f"\u23f1\ufe0f requires_action at {time.time()-t_start:.1f}s")
+            t_phase = time.time()
+            tools_ran = True
+            run = _build_tool_outputs(run, client, thread_id, status_widget=status_widget)
+            t_phase = time.time()
+            current_label = "Foundry Agent: processing results"
+        elif tools_ran and current_label != "Foundry Agent: generating response":
+            current_label = "Foundry Agent: generating response"
+            t_phase = time.time()
+    total = int(time.time() - t_start)
+    print(f"\u23f1\ufe0f Run completed in {total}s (status: {run.status})")
+    if status_widget:
+        status_widget.update(label=f"Done ({total}s total)", state="complete")
     return run
 
-
-def _retry_send(client: AIProjectClient, agent_id: str, thread_id: str, tool_mode: str) -> object:
-    """Create and run the agent, retrying on rate-limit errors with backoff."""
-    import re
-    max_retries = 5
-    for attempt in range(max_retries):
-        if tool_mode == "mcp":
-            run = client.agents.runs.create_and_process(thread_id=thread_id, agent_id=agent_id)
-        else:
-            run = client.agents.runs.create(thread_id=thread_id, agent_id=agent_id)
-            run = _wait_for_run(client, thread_id, run)
-
-        if run.status != "failed":
-            return run
-
-        err = run.last_error or {}
-        code = err.get("code", "")
-        msg = err.get("message", "")
-        if code != "rate_limit_exceeded":
-            return run   # non-rate-limit failure — return as-is
-
-        # Parse retry-after from the message, e.g. "retry after 52 seconds"
-        wait = 60
-        match = re.search(r'retry after (\d+) second', msg, re.IGNORECASE)
-        if match:
-            wait = int(match.group(1))
-
-        if attempt < max_retries - 1:
-            st.toast(f"Rate limit hit — retrying in {wait}s (attempt {attempt + 1}/{max_retries})")
-            # Sleep in small increments so Streamlit doesn't appear completely frozen
-            slept = 0
-            while slept < wait:
-                chunk = min(5, wait - slept)
-                time.sleep(chunk)
-                slept += chunk
-        
-    return run  # return last failed run after all retries
-
-
-# ─── Agent interaction ────────────────────────────────────────────────────────
 
 def _cancel_active_runs(client: AIProjectClient, thread_id: str) -> None:
     """Cancel any runs that are still in a non-terminal state on this thread."""
@@ -256,9 +250,8 @@ def _cancel_active_runs(client: AIProjectClient, thread_id: str) -> None:
             if run.status not in terminal:
                 try:
                     client.agents.runs.cancel(thread_id=thread_id, run_id=run.id)
-                    # Wait briefly for the cancellation to take effect
                     for _ in range(10):
-                        time.sleep(1)
+                        time.sleep(0.5)
                         r = client.agents.runs.get(thread_id=thread_id, run_id=run.id)
                         if r.status in terminal:
                             break
@@ -273,21 +266,22 @@ def send_message(
     agent_id: str,
     thread_id: str,
     content: str,
-    tool_mode: str = "sdk",
+    status_widget=None,
+    task: str = "chat",
 ) -> str:
-    # Ensure no active run is blocking the thread before posting
     _cancel_active_runs(client, thread_id)
-
     client.agents.messages.create(thread_id=thread_id, role="user", content=content)
 
-    run = _retry_send(client, agent_id, thread_id, tool_mode)
+    if status_widget:
+        status_widget.update(label="Starting Foundry Agent...", state="running")
+    run = client.agents.runs.create(thread_id=thread_id, agent_id=agent_id)
+    run = _wait_for_run(client, thread_id, run, status_widget=status_widget, task=task)
 
     if run.status == "failed":
-        return f"\u274c Run failed: {run.last_error}"
+        return f"❌ Run failed: {run.last_error}"
 
     last = client.agents.messages.get_last_message_text_by_role(
-        thread_id=thread_id,
-        role="assistant",
+        thread_id=thread_id, role="assistant",
     )
     return last.text.value if last else "(no response)"
 
@@ -296,7 +290,6 @@ def send_message(
 
 def main() -> None:
     config = load_config()
-    tool_mode = config.get("tool_mode", "sdk")
     client = get_client(config["endpoint"])
     init_session(client)
 
@@ -365,7 +358,6 @@ def main() -> None:
                     st.caption(f"**{col}**: " + " / ".join(f'"{v[:50]}"' for v in preview_vals))
 
         if file_bytes and sel_cols and st.button("Analyse File", type="primary", use_container_width=True):
-            with st.spinner("Reading and analysing..."):
                 try:
                     df_final, _, _ = read_excel_responses(file_bytes, uploaded_file.name)
                 except Exception as exc:
@@ -415,34 +407,25 @@ def main() -> None:
                 )
 
                 st.session_state.messages.append({"role": "user", "content": user_msg})
-                reply = send_message(
-                    client, config["agent_id"], st.session_state.thread_id, user_msg,
-                    tool_mode=tool_mode,
-                )
-                st.session_state.messages.append({"role": "assistant", "content": reply})
-            st.rerun()
+                st.session_state["_pending_file_msg"] = user_msg
+                st.rerun()
 
         # Fabric query mode — agent calls Fabric Data Agent tool directly
         if data_source == "Fabric Semantic Model" and fabric_query and st.button("Query & Analyze", type="primary", use_container_width=True):
-            with st.spinner("Querying Fabric and analyzing..."):
-                user_msg = (
-                    f"Use the fabric_dataagent tool now to query the semantic model: {fabric_query}\n\n"
-                    "After retrieving the data, analyze it using the Language tools "
-                    "(analyze_sentiment, extract_key_phrases, recognize_entities — batch up to 10 per call).\n\n"
-                    "Present results in this structure:\n"
-                    "1. Customer Sentiment Overview (executive summary)\n"
-                    "2. Where Sentiment Breaks Down (table with themes and sentiment percentages)\n"
-                    "3. Key Drivers of Negative Sentiment (table with top 5 issue clusters)\n"
-                    "4. Key Drivers of Positive Sentiment (table with top strengths)\n"
-                    "5. Insight-Driven Recommendations (numbered, with Why/Recommendation format)"
-                )
-                
-                st.session_state.messages.append({"role": "user", "content": f"Query: {fabric_query}"})
-                reply = send_message(
-                    client, config["agent_id"], st.session_state.thread_id, user_msg,
-                    tool_mode=tool_mode,
-                )
-                st.session_state.messages.append({"role": "assistant", "content": reply})
+            user_msg = (
+                f"Use the fabric_dataagent tool now to query the semantic model: {fabric_query}\n\n"
+                "After retrieving the data, analyze it using the Language tools "
+                "(analyze_sentiment, extract_key_phrases, recognize_entities — batch up to 10 per call).\n\n"
+                "Present results in this structure:\n"
+                "1. Customer Sentiment Overview (executive summary)\n"
+                "2. Where Sentiment Breaks Down (table with themes and sentiment percentages)\n"
+                "3. Key Drivers of Negative Sentiment (table with top 5 issue clusters)\n"
+                "4. Key Drivers of Positive Sentiment (table with top strengths)\n"
+                "5. Insight-Driven Recommendations (numbered, with Why/Recommendation format)"
+            )
+            
+            st.session_state.messages.append({"role": "user", "content": f"Query: {fabric_query}"})
+            st.session_state["_pending_fabric_msg"] = user_msg
             st.rerun()
 
         st.divider()
@@ -483,6 +466,26 @@ def main() -> None:
                     "Try: *'Analyse: Great service! / Very slow delivery / Best experience ever'*"
                 )
 
+    # ── Run file analysis (outside sidebar so st.status renders in main area)
+    if st.session_state.get("_pending_file_msg"):
+        user_msg = st.session_state.pop("_pending_file_msg")
+        with st.chat_message("assistant"):
+            with st.status("Starting Foundry Agent...", expanded=True) as status:
+                reply = send_message(client, config["agent_id"], st.session_state.thread_id, user_msg, status_widget=status, task="file")
+            st.markdown(reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.rerun()
+
+    # ── Run Fabric query (outside sidebar) ────────────────────────────────
+    if st.session_state.get("_pending_fabric_msg"):
+        user_msg = st.session_state.pop("_pending_fabric_msg")
+        with st.chat_message("assistant"):
+            with st.status("Starting Foundry Agent...", expanded=True) as status:
+                reply = send_message(client, config["agent_id"], st.session_state.thread_id, user_msg, status_widget=status, task="fabric")
+            st.markdown(reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.rerun()
+
     # Chat input
     if prompt := st.chat_input("Ask the agent or paste survey responses..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -490,11 +493,8 @@ def main() -> None:
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                reply = send_message(
-                    client, config["agent_id"], st.session_state.thread_id, prompt,
-                    tool_mode=tool_mode,
-                )
+            with st.status("Starting Foundry Agent...", expanded=True) as status:
+                reply = send_message(client, config["agent_id"], st.session_state.thread_id, prompt, status_widget=status, task="chat")
             st.markdown(reply)
 
         st.session_state.messages.append({"role": "assistant", "content": reply})

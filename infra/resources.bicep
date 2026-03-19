@@ -1,7 +1,7 @@
 // Provisions an Azure AI Foundry project for sentiment analysis
 // Resources: AI Services (Foundry), Project, GPT-4o deployment, AI Language
 // All service-to-service auth uses managed identity (no API keys)
-// Data source: local files (default) or Microsoft Fabric OneLake (set enableFabric = true)
+// Data source: local files (default) or Microsoft Fabric Data Agent (set enableFabric = true)
 
 targetScope = 'resourceGroup'
 
@@ -26,11 +26,28 @@ param gptCapacity int = 50
 @description('Tags applied to every resource')
 param tags object = {}
 
-@description('Enable Microsoft Fabric OneLake connection as data source (requires Fabric workspace)')
-param enableFabric bool = false
+@description('Enable Microsoft Fabric Data Agent connection as data source (true/false)')
+param enableFabric string = 'false'
 
-@description('Fabric OneLake endpoint URL (required when enableFabric = true)')
-param fabricOneLakeEndpoint string = ''
+var fabricEnabled = enableFabric == 'true'
+
+@description('Fabric connection name in the Foundry project')
+param fabricConnectionName string = 'fabric-rsa-survey'
+
+@description('Microsoft Fabric workspace ID (required when enableFabric = true)')
+param fabricWorkspaceId string = ''
+
+@description('Fabric Data Agent artifact ID (required when enableFabric = true)')
+param fabricArtifactId string = ''
+
+@description('Azure region for the Fabric capacity (defaults to main location)')
+param fabricLocation string = location
+
+@description('Fabric capacity SKU (e.g. F2, F4, F8)')
+param fabricSkuName string = 'F2'
+
+@description('Fabric capacity admin email')
+param fabricAdminEmail string = ''
 
 // ─── Derived names ──────────────────────────────────────────────────────────
 
@@ -39,6 +56,7 @@ var aiServicesName = '${baseName}-ais-${uniqueSuffix}'
 var languageName = '${baseName}-lang-${uniqueSuffix}'
 var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
 var appInsightsName = '${baseName}-appins-${uniqueSuffix}'
+var fabricCapacityName = '${replace(toLower(baseName), '-', '')}fabric${uniqueSuffix}'
 var projectName = 'sentiment-analysis'
 
 // ─── Well-known role definition IDs ─────────────────────────────────────────
@@ -77,6 +95,28 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
     IngestionMode: 'LogAnalytics'
     publicNetworkAccessForIngestion: 'Enabled'
     publicNetworkAccessForQuery: 'Enabled'
+  }
+}
+
+// ─── Diagnostic Settings (sends AI Services telemetry to App Insights) ─────
+
+resource aiServicesDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'send-to-appinsights'
+  scope: aiServices
+  properties: {
+    workspaceId: logAnalytics.id
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
   }
 }
 
@@ -180,21 +220,64 @@ resource languageConnection 'Microsoft.CognitiveServices/accounts/projects/conne
   }
 }
 
-// ─── Fabric OneLake connection (opt-in) ────────────────────────────────────
-// Flip enableFabric = true and provide fabricOneLakeEndpoint to connect
-// Source Data → Fabric OneLake → Fabric Data Agent → this Foundry Agent
+// ─── Project connection to Application Insights ────────────────────────────
 
-resource fabricConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = if (enableFabric) {
+resource appInsightsConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = {
   parent: foundryProject
-  name: 'fabric-onelake'
+  name: 'appInsights-connection'
   properties: {
-    authType: 'AAD'
-    category: 'AzureOneLake'
-    target: fabricOneLakeEndpoint
-    useWorkspaceManagedIdentity: true
+    authType: 'ApiKey'
+    category: 'AppInsights'
+    target: appInsights.id
     metadata: {
-      Kind: 'AzureOneLake'
-      ApiType: 'azure'
+      ApiType: 'Azure'
+      ResourceId: appInsights.id
+    }
+    credentials: {
+      key: appInsights.properties.InstrumentationKey
+    }
+  }
+}
+
+// ─── Microsoft Fabric Capacity (opt-in) ────────────────────────────────────
+
+resource fabricCapacity 'Microsoft.Fabric/capacities@2023-11-01' = if (fabricEnabled) {
+  name: fabricCapacityName
+  location: fabricLocation
+  tags: tags
+  sku: {
+    name: fabricSkuName
+    tier: 'Fabric'
+  }
+  properties: {
+    administration: {
+      members: [
+        fabricAdminEmail
+      ]
+    }
+  }
+}
+
+// ─── Fabric Data Agent connection (opt-in) ─────────────────────────────────
+// Flip enableFabric = true and provide fabricWorkspaceId to connect
+// Source Data → Fabric Semantic Model → Fabric Data Agent → this Foundry Agent
+
+resource fabricConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01' = if (fabricEnabled) {
+  parent: foundryProject
+  name: fabricConnectionName
+  properties: {
+    authType: 'CustomKeys'
+    category: 'CustomKeys'
+    target: '_'
+    metadata: {
+      type: 'fabric_dataagent'
+      'workspace-id': fabricWorkspaceId
+      'artifact-id': fabricArtifactId
+    }
+    credentials: {
+      keys: {
+        placeholder: 'none'
+      }
     }
   }
 }
@@ -240,8 +323,8 @@ output foundryProjectEndpoint string = '${aiServices.properties.endpoint}api/pro
 @description('AI Language endpoint for sentiment analysis')
 output languageEndpoint string = languageService.properties.endpoint
 
-@description('Fabric OneLake enabled')
-output fabricEnabled bool = enableFabric
+@description('Fabric connection name (empty when Fabric is disabled)')
+output fabricConnectionName string = fabricEnabled ? fabricConnectionName : ''
 
 @description('Resource group name')
 output resourceGroupName string = resourceGroup().name
