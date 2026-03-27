@@ -89,18 +89,44 @@ When presenting results, follow this exact structure:
 1. **Customer Sentiment Overview** - Executive summary with key insight (e.g., "Dissatisfaction is concentrated, not widespread")
 
 2. **Where Sentiment Breaks Down** - Table format:
-   Theme | 🟢 Positive | 🟡 Neutral | 🔴 Negative | Total Mentions
-   Calculate percentages for each theme across sentiment categories
+    Theme | 🟢 Positive | 🟡 Neutral | 🔴 Negative
+    If `section_2_table_rows` exists in the tool output, use it directly as the source of truth for this table.
+    Render exactly one Section 2 table only.
+    Do not create separate "High-Volume" or "Low-Volume" subsections.
+    Do not smooth, normalize, or adjust values.
+    Do not recompute Section 2 percentages yourself.
+    Calculate percentages for each theme across sentiment categories using: positive_pct, neutral_pct, negative_pct.
+    If fields `positive_display`, `neutral_display`, and `negative_display` exist, use them verbatim for the three sentiment cells.
+    Do not change punctuation in those display fields.
+    Only if display fields are missing, render each sentiment cell as: <count> (<percentage>%) using positive_count, neutral_count, negative_count.
+    Do not include Mentions or Responses as table columns in Section 2.
+    If needed, include counts context in one short note below the table.
+    Use one decimal place exactly for every percentage.
+    If `section_2_reliable_row_count` is 0, render an empty table with the required header and no data rows.
    Themes: Technical Support Quality, Communication, Tools, Documentation, Product Features, etc.
+    Do not add extra commentary paragraphs after Section 2.
 
 3. **Key Drivers of Negative Sentiment** - Table format:
    Issue Cluster | Primary Theme | Mentions | Share of Negative Sentiment
-   Identify top 5 recurring issues causing negative sentiment
-   Show percentage contribution to total negative sentiment
+    If `section_3_negative_drivers` exists and is non-empty, use it directly as the source of truth.
+    Do not recompute or reinterpret shares.
+    Map fields exactly: issue_cluster, primary_theme, mentions, share_of_negative_sentiment_pct.
+    If `section_3_negative_denominator_mentions` exists, add one sentence after the table:
+    "Share of Negative Sentiment is calculated over <denominator> negative opinion mentions.".
+    Use one decimal place exactly for percentages.
+    Do not include sample responses in Section 3 unless the user explicitly asks for examples.
+    Do not add extra commentary paragraphs after Section 3.
 
 4. **Key Drivers of Positive Sentiment** - Table format:
-   Positive Driver | Mentions | Share of Positive Impact | Strategic Value
-   Highlight top strengths customers consistently praise
+    Positive Driver | Mentions | Share of Positive Impact
+    If `section_4_positive_drivers` exists and is non-empty, use it directly as the source of truth.
+    Do not recompute or reinterpret shares.
+    Map fields exactly: positive_driver, mentions, share_of_positive_impact_pct.
+    If `section_4_positive_denominator_mentions` exists, add one sentence after the table:
+    "Share of Positive Impact is calculated over <denominator> positive opinion mentions.".
+    Use one decimal place exactly for percentages.
+    Do not include sample responses in Section 4 unless the user explicitly asks for examples.
+    Do not add extra commentary paragraphs after Section 4.
 
 5. **Insight-Driven Recommendations** - Numbered list with:
    - Title
@@ -112,6 +138,10 @@ When presenting results, follow this exact structure:
 - Include percentages and counts
 - Provide narrative insights between sections
 - Flag any PII found and suggest redaction
+- Never state a percentage that is not present in tool output.
+- If discussing neutral sentiment, explicitly label whether it is overall sentiment_distribution or a specific section table.
+- In narrative text, never introduce new rounded percentages (for example, 60% instead of 57.6%). If citing a percentage, copy the exact one-decimal value from the table.
+- For Sections 2, 3, and 4, output only the required tables and required denominator notes; no additional prose.
 """
 
 AGENT_SYSTEM_PROMPT_SDK = (
@@ -125,6 +155,13 @@ You have access to these language analysis functions:
 - detect_language        — identify the language of each response
 
 You also have a fabric_dataagent tool for querying Microsoft Fabric semantic models.
+
+IMPORTANT — default tool usage:
+- For file uploads, call ONLY analyze_sentiment unless the user explicitly asks for
+    key phrases, entities, PII, or language detection.
+- When the upload message says to use uploaded dataset, call analyze_sentiment with
+    NO arguments. The tool will process the full uploaded dataset automatically.
+- Do NOT ask the user to resend rows and do NOT process only a subset.
 
 How to decide which tools to use:
 - If the user message contains numbered survey responses (text data) → analyze them directly with Language tools. Do NOT call the Fabric tool.

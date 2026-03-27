@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import io
 import os
+import re
 
 # .env values OVERRIDE existing env vars to avoid stale terminal sessions
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -163,6 +164,90 @@ def reset_thread(client: AIProjectClient) -> None:
 
 # ─── SDK tool-call loop ──────────────────────────────────────────────────────
 
+def _count_docs_from_args(fn_args: dict) -> int:
+    """Count documents from tool arguments."""
+    docs = fn_args.get("documents", [])
+    if isinstance(docs, str):
+        try:
+            docs = json.loads(docs)
+        except (json.JSONDecodeError, TypeError):
+            return 1
+    return len(docs) if isinstance(docs, list) else 0
+
+
+def _extract_processed_count(fn_name: str, fn_args: dict, result: str) -> int:
+    """Estimate rows processed by analyze_sentiment tool calls."""
+    if fn_name != "analyze_sentiment":
+        return 0
+
+    explicit = _count_docs_from_args(fn_args)
+    if explicit:
+        return explicit
+
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return 0
+
+    if isinstance(payload, dict):
+        total = payload.get("total_documents")
+        return int(total) if isinstance(total, int) else 0
+    if isinstance(payload, list):
+        return len(payload)
+    return 0
+
+
+def _extract_section2_rows(fn_name: str, result: str) -> list[dict]:
+    """Extract deterministic Section 2 rows from analyze_sentiment summary payload."""
+    if fn_name != "analyze_sentiment":
+        return []
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(payload, dict):
+        rows = payload.get("section_2_table_rows", [])
+        return rows if isinstance(rows, list) else []
+    return []
+
+
+def _render_section2_markdown(rows: list[dict]) -> str:
+    """Render Section 2 in a fixed format independent of agent markdown."""
+    lines = [
+        "2. Where Sentiment Breaks Down",
+        "",
+        "| Theme | 🟢 Positive | 🟡 Neutral | 🔴 Negative |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in rows:
+        theme = str(row.get("theme", "")).strip() or "Unknown"
+        pos = str(row.get("positive_display") or f"{row.get('positive_count', 0)} ({float(row.get('positive_pct', 0)):.1f}%)")
+        neu = str(row.get("neutral_display") or f"{row.get('neutral_count', 0)} ({float(row.get('neutral_pct', 0)):.1f}%)")
+        neg = str(row.get("negative_display") or f"{row.get('negative_count', 0)} ({float(row.get('negative_pct', 0)):.1f}%)")
+        lines.append(f"| {theme} | {pos} | {neu} | {neg} |")
+    return "\n".join(lines)
+
+
+def _inject_section2(reply: str, rows: list[dict]) -> str:
+    """Replace agent-generated Section 2 with deterministic app-rendered table."""
+    if not rows:
+        return reply
+
+    section2 = _render_section2_markdown(rows)
+    pattern = re.compile(
+        r"(?ims)^\s*\**\s*2\.\s*Where Sentiment Breaks Down.*?(?=^\s*\**\s*3\.\s*Key Drivers of Negative Sentiment\b|\Z)"
+    )
+
+    if pattern.search(reply):
+        return pattern.sub(section2 + "\n\n", reply, count=1)
+
+    section3_pattern = re.compile(r"(?ims)^\s*\**\s*3\.\s*Key Drivers of Negative Sentiment\b")
+    m = section3_pattern.search(reply)
+    if m:
+        return reply[:m.start()] + section2 + "\n\n" + reply[m.start():]
+
+    return reply.rstrip() + "\n\n" + section2
+
 def _build_tool_outputs(run, client: AIProjectClient, thread_id: str, status_widget=None):
     """Execute Language SDK function tools and submit outputs."""
     from language_tools import TOOL_DISPATCH
@@ -186,6 +271,24 @@ def _build_tool_outputs(run, client: AIProjectClient, thread_id: str, status_wid
                 result = fn(**fn_args)
         except Exception as exc:  # noqa: BLE001
             result = json.dumps({"error": str(exc)})
+
+        processed = _extract_processed_count(fn_name, fn_args, result)
+        section2_rows = _extract_section2_rows(fn_name, result)
+        if section2_rows:
+            st.session_state["_section2_rows"] = section2_rows
+
+        if processed:
+            st.session_state.setdefault("_rows_processed", 0)
+            st.session_state["_rows_processed"] += processed
+            if status_widget:
+                status_widget.update(
+                    label=(
+                        f"Language Tools: {fn_name} ({i}/{len(calls)}) "
+                        f"- {st.session_state['_rows_processed']} rows processed"
+                    ),
+                    state="running",
+                )
+
         print(f"  ⚙️ {fn_name} took {time.time()-t0:.1f}s")
         tool_outputs.append(ToolOutput(tool_call_id=call.id, output=result))
 
@@ -218,7 +321,8 @@ def _wait_for_run(client: AIProjectClient, thread_id: str, run, status_widget=No
                 pass
             run._data["status"] = "failed"
             run._data["last_error"] = {"code": "timeout", "message": "Run exceeded 5-minute timeout."}
-            return run
+            rows_processed = int(st.session_state.pop("_rows_processed", 0))
+            return run, rows_processed
         elapsed = int(time.time() - t_phase)
         if status_widget:
             status_widget.update(label=f"{current_label}... ({elapsed}s)", state="running")
@@ -235,10 +339,14 @@ def _wait_for_run(client: AIProjectClient, thread_id: str, run, status_widget=No
             current_label = "Foundry Agent: generating response"
             t_phase = time.time()
     total = int(time.time() - t_start)
-    print(f"\u23f1\ufe0f Run completed in {total}s (status: {run.status})")
+    rows_processed = int(st.session_state.pop("_rows_processed", 0))
+    print(f"\u23f1\ufe0f Run completed in {total}s (status: {run.status}, rows: {rows_processed})")
     if status_widget:
-        status_widget.update(label=f"Done ({total}s total)", state="complete")
-    return run
+        done_label = f"Done ({total}s total)"
+        if rows_processed:
+            done_label += f" - {rows_processed} rows processed"
+        status_widget.update(label=done_label, state="complete")
+    return run, rows_processed
 
 
 def _cancel_active_runs(client: AIProjectClient, thread_id: str) -> None:
@@ -269,13 +377,15 @@ def send_message(
     status_widget=None,
     task: str = "chat",
 ) -> str:
+    # Clear any previous run leftovers.
+    st.session_state.pop("_section2_rows", None)
     _cancel_active_runs(client, thread_id)
     client.agents.messages.create(thread_id=thread_id, role="user", content=content)
 
     if status_widget:
         status_widget.update(label="Starting Foundry Agent...", state="running")
     run = client.agents.runs.create(thread_id=thread_id, agent_id=agent_id)
-    run = _wait_for_run(client, thread_id, run, status_widget=status_widget, task=task)
+    run, rows_processed = _wait_for_run(client, thread_id, run, status_widget=status_widget, task=task)
 
     if run.status == "failed":
         return f"❌ Run failed: {run.last_error}"
@@ -283,7 +393,12 @@ def send_message(
     last = client.agents.messages.get_last_message_text_by_role(
         thread_id=thread_id, role="assistant",
     )
-    return last.text.value if last else "(no response)"
+    reply = last.text.value if last else "(no response)"
+    section2_rows = st.session_state.pop("_section2_rows", [])
+    reply = _inject_section2(reply, section2_rows)
+    if rows_processed:
+        reply += f"\n\n---\n*Language service processed: {rows_processed} rows*"
+    return reply
 
 
 # ─── UI ───────────────────────────────────────────────────────────────────────
@@ -358,57 +473,52 @@ def main() -> None:
                     st.caption(f"**{col}**: " + " / ".join(f'"{v[:50]}"' for v in preview_vals))
 
         if file_bytes and sel_cols and st.button("Analyse File", type="primary", use_container_width=True):
-                try:
-                    df_final, _, _ = read_excel_responses(file_bytes, uploaded_file.name)
-                except Exception as exc:
-                    st.error(f"Could not read file: {exc}")
-                    st.stop()
+            try:
+                df_final, _, _ = read_excel_responses(file_bytes, uploaded_file.name)
+            except Exception as exc:
+                st.error(f"Could not read file: {exc}")
+                st.stop()
 
-                # Collect responses from all selected columns
-                all_responses = []
-                for col in sel_cols:
-                    col_responses = df_final[col].dropna().astype(str).tolist()
-                    all_responses.extend([(col, resp) for resp in col_responses])
+            # Collect responses from all selected columns
+            all_responses = []
+            for col in sel_cols:
+                col_responses = df_final[col].dropna().astype(str).tolist()
+                all_responses.extend([(col, resp) for resp in col_responses])
 
-                if not all_responses:
-                    st.warning("No responses found in the selected columns.")
-                    st.stop()
+            if not all_responses:
+                st.warning("No responses found in the selected columns.")
+                st.stop()
 
-                # Cap at 100 responses to avoid huge messages / long runtimes
-                MAX_RESPONSES = 100
-                truncated = len(all_responses) > MAX_RESPONSES
-                if truncated:
-                    all_responses = all_responses[:MAX_RESPONSES]
+            # Store all uploaded responses for deterministic full-dataset processing.
+            from language_tools import set_pending_documents
+            docs_for_tool = [resp for _, resp in all_responses]
+            set_pending_documents(docs_for_tool)
 
-                # Build message: header + numbered responses with column labels
-                if len(sel_cols) == 1:
-                    numbered = "\n".join(f"{i+1}. {resp}" for i, (_, resp) in enumerate(all_responses))
-                    col_desc = f"column `{sel_cols[0]}`"
-                else:
-                    numbered = "\n".join(f"{i+1}. [{col}] {resp}" for i, (col, resp) in enumerate(all_responses))
-                    col_desc = f"columns `{', '.join(sel_cols)}`"
-                
-                trunc_note = f"\n\n*Note: file has more rows — showing first {MAX_RESPONSES} only.*" if truncated else ""
-                header = (
-                    f"File: **{uploaded_file.name}** — {len(all_responses)} responses "
-                    f"from {col_desc}"
-                )
-                user_msg = (
-                    f"{header}{trunc_note}\n\n"
-                    "Please analyse all survey responses below using the Azure AI Language tools.\n"
-                    "Use analyze_sentiment, extract_key_phrases, and recognize_entities tools — batch up to 10 responses per call.\n\n"
-                    "Provide analysis in this structure:\n"
-                    "1. Customer Sentiment Overview (executive summary)\n"
-                    "2. Where Sentiment Breaks Down (table with themes and sentiment percentages)\n"
-                    "3. Key Drivers of Negative Sentiment (table with top 5 issue clusters)\n"
-                    "4. Key Drivers of Positive Sentiment (table with top strengths)\n"
-                    "5. Insight-Driven Recommendations (numbered, with Why/Recommendation format)\n\n"
-                    f"Responses:\n{numbered}"
-                )
+            if len(sel_cols) == 1:
+                col_desc = f"column `{sel_cols[0]}`"
+            else:
+                col_desc = f"columns `{', '.join(sel_cols)}`"
 
-                st.session_state.messages.append({"role": "user", "content": user_msg})
-                st.session_state["_pending_file_msg"] = user_msg
-                st.rerun()
+            header = (
+                f"File: **{uploaded_file.name}** — {len(docs_for_tool)} responses "
+                f"from {col_desc}"
+            )
+            user_msg = (
+                f"{header}\n\n"
+                "Analyze the uploaded survey file now.\n"
+                "Call analyze_sentiment with NO arguments so it uses the full uploaded dataset.\n"
+                "Do NOT use extract_key_phrases or recognize_entities unless explicitly requested.\n\n"
+                "Provide analysis in this structure:\n"
+                "1. Customer Sentiment Overview (executive summary)\n"
+                "2. Where Sentiment Breaks Down (table with themes and sentiment percentages)\n"
+                "3. Key Drivers of Negative Sentiment (table with top 5 issue clusters)\n"
+                "4. Key Drivers of Positive Sentiment (table with top strengths)\n"
+                "5. Insight-Driven Recommendations (numbered, with Why/Recommendation format)"
+            )
+
+            st.session_state.messages.append({"role": "user", "content": user_msg})
+            st.session_state["_pending_file_msg"] = user_msg
+            st.rerun()
 
         # Fabric query mode — agent calls Fabric Data Agent tool directly
         if data_source == "Fabric Semantic Model" and fabric_query and st.button("Query & Analyze", type="primary", use_container_width=True):
